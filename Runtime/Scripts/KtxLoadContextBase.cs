@@ -25,7 +25,8 @@ namespace GLTFast {
         public int imageIndex;
         protected KtxTexture ktxTexture;
         
-        public abstract Task<TextureResult> LoadKtx(bool linear);
+        public abstract Task<ErrorCode> LoadAndTranscode(bool linear);
+        public abstract TextureResult CreateTextureAndDispose();
     }
 }
 #endif // KTX_UNITY

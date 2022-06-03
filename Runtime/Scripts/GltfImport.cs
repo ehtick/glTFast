@@ -36,6 +36,9 @@ using Unity.Collections.LowLevel.Unsafe;
 using Unity.Mathematics;
 using Debug = UnityEngine.Debug;
 using Object = UnityEngine.Object;
+#if KTX_UNITY
+using KtxUnity;
+#endif
 #if MESHOPT
 using Meshoptimizer;
 #endif
@@ -1008,18 +1011,21 @@ namespace GLTFast {
             return true;
         }
         
-        async Task<bool> ProcessKtxDownload(int index, Task<IDownload> downloadTask) {
+        async Task<bool> ProcessKtxDownload(int imageIndex, Task<IDownload> downloadTask) {
             var www = await downloadTask;
             if(www.success) {
-                var ktxContext = new KtxLoadContext(index,www.data);
-                var forceSampleLinear = imageGamma!=null && !imageGamma[ktxContext.imageIndex];
-                var textureResult = await ktxContext.LoadKtx(forceSampleLinear);
-                images[ktxContext.imageIndex] = textureResult.texture;
-                return true;
+                var ktxContext = new KtxLoadContext(imageIndex,www.data);
+                var forceSampleLinear = imageGamma!=null && !imageGamma[imageIndex];
+                var transcodeResult = await ktxContext.LoadAndTranscode(forceSampleLinear);
+                if (transcodeResult == ErrorCode.Success) {
+                    var textureResult = ktxContext.CreateTextureAndDispose();
+                    images[imageIndex] = textureResult.texture;
+                    return textureResult.errorCode == ErrorCode.Success;
+                }
             } else {
-                logger?.Error(LogCode.TextureDownloadFailed,www.error,index.ToString());
-                return false;
+                logger?.Error(LogCode.TextureDownloadFailed,www.error,imageIndex.ToString());
             }
+            return false;
         }
 #endif // KTX_UNITY
 
@@ -1359,19 +1365,28 @@ namespace GLTFast {
 
 #if KTX_UNITY
             if(ktxLoadContextsBuffer!=null) {
-
-                var ktxTasks = new Task<KtxUnity.TextureResult>[ktxLoadContextsBuffer.Count];
+                var ktxTasks = new List<Task<KtxTranscodeTaskWrapper>>(ktxLoadContextsBuffer.Count);
                 for (var i = 0; i < ktxLoadContextsBuffer.Count; i++) {
                     var ktx = ktxLoadContextsBuffer[i];
                     var forceSampleLinear = imageGamma!=null && !imageGamma[ktx.imageIndex];
-                    ktxTasks[i] = ktx.LoadKtx(forceSampleLinear);
+                    ktxTasks.Add(KtxLoadAndTranscode(i,ktx,forceSampleLinear));
                     await deferAgent.BreakPoint();
                 }
-                await Task.WhenAll(ktxTasks);
 
-                for (var i = 0; i < ktxLoadContextsBuffer.Count; i++) {
-                    var ktx = ktxLoadContextsBuffer[i];
-                    images[ktx.imageIndex] = ktxTasks[i].Result.texture;
+                while (ktxTasks.Count > 0) {
+                    var kTask = await Task.WhenAny(ktxTasks);
+                    var i = kTask.Result.index;
+                    if (kTask.Result.errorCode == ErrorCode.Success) {
+                        var ktx = ktxLoadContextsBuffer[i];
+                        var result = ktx.CreateTextureAndDispose();
+                        images[ktx.imageIndex] = result.texture;
+                        await deferAgent.BreakPoint();
+                    }
+                    else {
+                        //TODO Dispose?
+                    }
+
+                    ktxTasks.Remove(kTask);
                 }
                 ktxLoadContextsBuffer.Clear();
             }
@@ -3081,5 +3096,19 @@ namespace GLTFast {
                     return ImageFormat.Unknown;
             }
         }
+        
+#if KTX_UNITY
+        struct KtxTranscodeTaskWrapper {
+            public int index;
+            public ErrorCode errorCode;
+        }
+
+        static async Task<KtxTranscodeTaskWrapper> KtxLoadAndTranscode(int index, KtxLoadContextBase ktx, bool linear) {
+            return new KtxTranscodeTaskWrapper {
+                index = index,
+                errorCode = await ktx.LoadAndTranscode(linear)
+            };
+        }
+#endif
     }
 }

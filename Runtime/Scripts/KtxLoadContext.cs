@@ -29,11 +29,25 @@ namespace GLTFast {
             ktxTexture = new KtxTexture();
         }
 
-        public override async Task<TextureResult> LoadKtx(bool linear) {
+        public override async Task<ErrorCode> LoadAndTranscode(bool linear) {
+            // TODO: pin data and don't create a copy
             var slice = new NativeArray<byte>(data,KtxNativeInstance.defaultAllocator);
-            var result = await ktxTexture.LoadBytesRoutine(slice,linear);
+            
+            var result = ktxTexture.Load(slice);
+            if (result != ErrorCode.Success) {
+                return result;
+            }
+
+            result = await ktxTexture.Transcode(linear);
+            
             slice.Dispose();
             data = null;
+            return result;
+        }
+
+        public override TextureResult CreateTextureAndDispose() {
+            var result = ktxTexture.CreateTexture();
+            ktxTexture.Dispose();
             return result;
         }
     }
